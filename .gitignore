@@ -1,0 +1,27 @@
+# Virtual envs
+.venv/
+venv/
+ENV/
+
+# Env files
+.env
+
+# Python cache / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Logs / runs
+logs/
+runs/
+*.log
+*.jsonl
+results.jsonl
+results.json
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/
