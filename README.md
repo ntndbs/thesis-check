@@ -24,8 +24,6 @@ The debate runs for up to `MAX_ROUNDS` rounds and can stop early based on:
 
 ## Demo
 
-## Demo
-
 ### Example run (PRO / CONTRA)
 ![Example run](assets/example-run_agents.png)
 
