@@ -8,7 +8,7 @@ It is designed for **local inference** via an **OpenAI-compatible API** (e.g., *
 
 ## What it does
 
-Given a thesis (e.g., “I will keep driving my Audi A4 (2018) until 2030”), ThesisCheck:
+Given a thesis (e.g., “Switching to a heat pump will reduce household emissions over 10 years.”), ThesisCheck:
 
 1. Runs **Agent A (Pro)** with a higher temperature (more creative).
 2. Runs **Agent B (Contra)** with a lower temperature (more critical).
