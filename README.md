@@ -22,6 +22,14 @@ The debate runs for up to `MAX_ROUNDS` rounds and can stop early based on:
 - **Stop phrases** (configurable),
 - **Convergence** (judge probability changes only marginally between rounds).
 
+## Demo
+
+### Example run (PRO / CONTRA)
+![Example run](assets/example-run_agents.png)
+
+### Judge output (strict JSON)
+![Judge output](assets/example-run_judge-output.png)
+
 ---
 
 ## Why this project exists
@@ -75,7 +83,7 @@ MODEL_JUDGE=qwen2.5-7b-instruct
 
 TEMP_A=0.8
 TEMP_B=0.2
-TEMP_J=0.1
+TEMP_J=0.0
 
 MAX_ROUNDS=3
 CONVERGENCE_DELTA=0.05
@@ -107,7 +115,7 @@ Logs are written to:
 runs/run-YYYYMMDD-HHMMSS.jsonl
 
 ## Logging (JSONL)
-Each run writes structured events (one JSON object per line), e.g.:
+Each run writes structured events to folder "runs" (one JSON object per line), e.g.:
 - agentA / agentB events:
 -- round number
 -- raw agent text
