@@ -10,8 +10,8 @@ class TemplateSpec:
     keys: Tuple[str, str, str, str]
 
 
-SPEC_A = TemplateSpec(keys=("PRO1", "PRO2", "ANNAHME_NEU", "RISIKO"))
-SPEC_B = TemplateSpec(keys=("CONTRA1", "CONTRA2", "ANNAHMEPRUEFUNG", "EDGE_CASE"))
+SPEC_A = TemplateSpec(keys=("PRO1", "PRO2", "NEW_ASSUMPTION", "RISK"))
+SPEC_B = TemplateSpec(keys=("CONTRA1", "CONTRA2", "ASSUMPTION_CHECK", "EDGE_CASE"))
 
 
 def truncate(txt: str, max_chars: int) -> str:
@@ -28,8 +28,8 @@ def similarity(a: str, b: str) -> float:
 
 
 def parse_template(text: str, spec: TemplateSpec) -> Dict[str, str] | None:
-    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
-    if len(lines) > 8 or len(lines) < 4:
+    lines = [ln.rstrip() for ln in text.strip().splitlines() if ln.strip()]
+    if len(lines) != 4:
         return None
 
     out: Dict[str, str] = {}
@@ -45,10 +45,10 @@ def parse_template(text: str, spec: TemplateSpec) -> Dict[str, str] | None:
             return None
         out[key] = val
 
-    if set(out.keys()) != set(spec.keys):
+    # must match keys exactly, no missing/extra keys
+    if tuple(out.keys()) and set(out.keys()) != set(spec.keys):
         return None
     return out
-
 
 def validate_agent_output(text: str, which: str) -> bool:
     spec = SPEC_A if which == "A" else SPEC_B

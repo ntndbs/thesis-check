@@ -62,7 +62,7 @@ class Settings:
 
         stop_phrases = [
             s.strip()
-            for s in _env("STOP_PHRASES", "Einigung erreicht;Keine neuen Punkte").split(";")
+            for s in _env("STOP_PHRASES", "agreement reached;no new points").split(";")
             if s.strip()
         ]
 

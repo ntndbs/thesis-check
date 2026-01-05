@@ -21,27 +21,48 @@ class JudgeOut:
     probability: float
 
 
+def _judge_from_obj(obj: dict, raw: str) -> JudgeOut:
+    p = float(obj.get("probability", 0.5))
+    p = max(0.0, min(1.0, p))
+    return JudgeOut(
+        summary=str(obj.get("summary", "")),
+        key_evidence_for=list(obj.get("key_evidence_for", []))[:10],
+        key_evidence_against=list(obj.get("key_evidence_against", []))[:10],
+        verdict=str(obj.get("verdict", "")),
+        probability=p,
+    )
+
+
 def parse_judge(raw: str) -> JudgeOut:
-    s, e = raw.find("{"), raw.rfind("}") + 1
+    """Parse the first valid JSON object found in the judge output."""
+    raw = (raw or "").strip()
+
     try:
-        obj = json.loads(raw[s:e])
-        p = float(obj.get("probability", 0.5))
-        p = max(0.0, min(1.0, p))
-        return JudgeOut(
-            summary=str(obj.get("summary", "")),
-            key_evidence_for=list(obj.get("key_evidence_for", []))[:10],
-            key_evidence_against=list(obj.get("key_evidence_against", []))[:10],
-            verdict=str(obj.get("verdict", "")),
-            probability=p,
-        )
+        obj = json.loads(raw)
+        return _judge_from_obj(obj, raw)
     except Exception:
-        return JudgeOut(
-            summary="JSON-Fallback",
-            key_evidence_for=[],
-            key_evidence_against=[],
-            verdict=raw[:240],
-            probability=0.5,
-        )
+        pass
+
+    for i, ch in enumerate(raw):
+        if ch != "{":
+            continue
+        for j in range(len(raw), i, -1):
+            if raw[j - 1] != "}":
+                continue
+            snippet = raw[i:j]
+            try:
+                obj = json.loads(snippet)
+                return _judge_from_obj(obj, raw)
+            except Exception:
+                continue
+
+    return JudgeOut(
+        summary="JSON-Fallback",
+        key_evidence_for=[],
+        key_evidence_against=[],
+        verdict=raw[:240],
+        probability=0.5,
+    )
 
 
 class JsonlLogger:
@@ -57,20 +78,25 @@ class JsonlLogger:
 
 
 def _agent_messages(role_prompt: str, thesis: str, history_compact: str) -> List[Dict[str, str]]:
-    msgs = [
+    msgs: List[Dict[str, str]] = [
         {"role": "system", "content": SYSTEM_SAFETY},
         {"role": "system", "content": role_prompt},
     ]
     if history_compact.strip():
-        msgs.append({"role": "user", "content": f"Kontext (letzte Runde, komprimiert):\n{history_compact}"})
-    msgs.append({"role": "user", "content": f"These: {thesis}\nAntworte strikt im geforderten Template."})
+        msgs.append({"role": "user", "content": f"Context (last round, condensed):\n{history_compact}"})
+    msgs.append({"role": "user", "content": f"Thesis: {thesis}\nFollow the required template strictly."})
     return msgs
+
+
+def _first_4_lines(text: str) -> str:
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    return "\n".join(lines[:4])
 
 
 def _compact_history(last_pro: str, last_con: str) -> str:
     if not last_pro and not last_con:
         return ""
-    return f"PRO zuletzt:\n{last_pro}\n\nCONTRA zuletzt:\n{last_con}"
+    return f"Last PRO:\n{_first_4_lines(last_pro)}\n\nLast CONTRA:\n{_first_4_lines(last_con)}"
 
 
 def agent_call_validated(
@@ -85,54 +111,54 @@ def agent_call_validated(
     max_chars: int,
     which: str,
 ) -> str:
-    """Template enforcement + anti-mirroring + anti-repeat (self/other) with retries.
-    Returns last VALID output if retries fail.
-    """
     last_valid: str = ""
-    last_out: str = ""
 
-    for _attempt in range(3):
+    for attempt in range(3):
         msgs = _agent_messages(role_prompt, thesis, history_compact)
 
-        # Only on retry: force novelty
-        if _attempt > 0:
+        if attempt > 0:
             msgs.append(
                 {
                     "role": "system",
-                    "content": "WICHTIG: Liefere komplett neue Punkte, andere Perspektive. Keine Wiederholung. Halte das Template exakt ein.",
+                    "content": (
+                        "IMPORTANT: Output exactly 4 lines and ONLY those 4 lines. "
+                        "Do not add any other text. Do not output JSON. "
+                        "Provide entirely new points from a different angle. "
+                        "Do not repeat yourself and do not mirror the other agent. "
+                        "Follow the template exactly."
+                    ),
                 }
             )
 
-        last_out = truncate(llm.chat(model=model, messages=msgs, temperature=temperature), max_chars)
+        out = truncate(llm.chat(model=model, messages=msgs, temperature=temperature), max_chars)
 
-        if not validate_agent_output(last_out, which=which):
+        if not validate_agent_output(out, which=which):
             continue
-        if last_other and too_similar(last_out, last_other):
+        if last_other and too_similar(out, last_other):
             continue
-        if last_self and too_similar(last_out, last_self):
+        if last_self and too_similar(out, last_self):
             continue
 
-        last_valid = last_out
-        return last_valid
+        last_valid = out
+        return out
 
-    # If all attempts failed, return last valid (if any), else a safe placeholder
     if last_valid:
         return last_valid
 
     if which == "A":
         return (
-            "- PRO1: (Fehler) Template konnte nicht zuverlässig erzeugt werden.\n"
-            "- PRO2: Bitte erneut ausführen oder Modell/Prompt anpassen.\n"
-            "- ANNAHME_NEU: Modell hält Template nicht ein.\n"
-            "- RISIKO: Bewertung ist eingeschränkt."
+            "- PRO1: (Error) The model did not reliably follow the required template.\n"
+            "- PRO2: Re-run or adjust the prompt/model settings.\n"
+            "- NEW_ASSUMPTION: The model failed template compliance.\n"
+            "- RISK: The evaluation may be limited."
         )
-    else:
-        return (
-            "- CONTRA1: (Fehler) Template konnte nicht zuverlässig erzeugt werden.\n"
-            "- CONTRA2: Bitte erneut ausführen oder Modell/Prompt anpassen.\n"
-            "- ANNAHMEPRUEFUNG: Modell hält Template nicht ein.\n"
-            "- EDGE_CASE: Bewertung ist eingeschränkt."
-        )
+
+    return (
+        "- CONTRA1: (Error) The model did not reliably follow the required template.\n"
+        "- CONTRA2: Re-run or adjust the prompt/model settings.\n"
+        "- ASSUMPTION_CHECK: The model failed template compliance.\n"
+        "- EDGE_CASE: The evaluation may be limited."
+    )
 
 
 def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_last: str) -> JudgeOut:
@@ -142,9 +168,9 @@ def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_l
         {
             "role": "user",
             "content": (
-                f"These: {thesis}\n\n"
-                f"PRO (letzte Runde):\n{pros_last}\n\n"
-                f"CONTRA (letzte Runde):\n{cons_last}"
+                f"Thesis: {thesis}\n\n"
+                f"PRO (last round):\n{pros_last}\n\n"
+                f"CONTRA (last round):\n{cons_last}"
             ),
         },
     ]
@@ -155,23 +181,30 @@ def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_l
     for attempt in range(2):
         msgs = list(base_msgs)
         if attempt > 0:
-            msgs.append({"role": "system", "content": "STRICT: Antworte ausschließlich als gültiges JSON, nichts anderes."})
+            msgs.append({"role": "system", "content": "STRICT: Reply with valid JSON only. No extra text."})
 
         raw = llm.chat(model=settings.model_judge, messages=msgs, temperature=settings.temp_j)
         parsed = parse_judge(raw)
 
-        # Heuristic: if we got real JSON fields, accept
         if parsed.summary != "JSON-Fallback" and parsed.verdict:
             break
 
     out = parsed if parsed else parse_judge(raw)
 
-    # Post-limit (safe)
+    if out.summary == "JSON-Fallback":
+        repair_msgs = [
+            {"role": "system", "content": "Output ONLY valid JSON. No extra text."},
+            {"role": "user", "content": f"Fix this to valid JSON only, preserving meaning:\n\n{raw}"},
+        ]
+        raw2 = llm.chat(model=settings.model_judge, messages=repair_msgs, temperature=0.0)
+        out = parse_judge(raw2)
+
     out.summary = out.summary[:800]
     out.verdict = out.verdict[:800]
     out.key_evidence_for = [x[:200] for x in out.key_evidence_for][:10]
     out.key_evidence_against = [x[:200] for x in out.key_evidence_against][:10]
     return out
+
 
 def run_duel(thesis: str, settings: Settings) -> Tuple[List[str], List[str], JudgeOut, str]:
     llm = LLM(base_url=settings.base_url, api_key=settings.api_key, seed=settings.seed)
@@ -227,13 +260,7 @@ def run_duel(thesis: str, settings: Settings) -> Tuple[List[str], List[str], Jud
         logger.write({"type": "judge_probe", "round": r, "judge": asdict(j_probe)})
 
         if last_prob is not None and abs(j_probe.probability - last_prob) < settings.convergence_delta:
-            logger.write(
-                {
-                    "type": "early_stop",
-                    "round": r,
-                    "reason": f"converged (Δ={abs(j_probe.probability - last_prob):.3f})",
-                }
-            )
+            logger.write({"type": "early_stop", "round": r, "reason": f"converged (Δ={abs(j_probe.probability - last_prob):.3f})"})
             break
         last_prob = j_probe.probability
 

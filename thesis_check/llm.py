@@ -8,26 +8,80 @@ from openai import OpenAI
 
 
 class LLM:
-    def __init__(self, base_url: str, api_key: str, seed: Optional[int] = None):
-        self.client = OpenAI(base_url=base_url, api_key=api_key)
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        seed: Optional[int] = None,
+        timeout: Optional[float] = None,
+    ):
+        """
+        base_url: OpenAI-compatible endpoint (e.g., LM Studio local server)
+        api_key:  arbitrary token for local servers
+        seed:     optional, only used if backend supports it
+        timeout:  optional request timeout in seconds (OpenAI SDK uses httpx under the hood)
+        """
+        # NOTE: OpenAI python SDK accepts 'timeout' in constructor for httpx client timeouts
+        # Some backends ignore it, but it's safe to pass.
+        if timeout is not None:
+            self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+        else:
+            self.client = OpenAI(base_url=base_url, api_key=api_key)
+
         self.seed = seed
+
         # Optional: enable timings via env var LLM_TIMINGS=1
         self.timings = os.getenv("LLM_TIMINGS", "0").strip() == "1"
 
-    def chat(self, model: str, messages: List[Dict[str, str]], temperature: float) -> str:
+    def chat(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.2,
+        response_format: Optional[Dict[str, Any]] = None,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Make a chat completion request.
+
+        response_format:
+            Optional. If supported by backend, can enforce JSON output:
+            {"type": "json_object"}
+
+        extra:
+            Optional dict merged into request kwargs (advanced usage).
+        """
         kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
         }
+
+        # Determinism (only if backend supports it)
         if self.seed is not None:
             kwargs["seed"] = self.seed
 
+        # Structured output (only if backend supports it)
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+
+        # Allow advanced overrides (max_tokens, top_p, etc.)
+        if extra:
+            kwargs.update(extra)
+
         t0 = time.time()
-        resp = self.client.chat.completions.create(**kwargs)
-        dt = time.time() - t0
+        try:
+            resp = self.client.chat.completions.create(**kwargs)
+        except Exception as e:
+            # Make debugging local endpoints easier
+            raise RuntimeError(
+                f"LLM request failed (model={model}, base_url={getattr(self.client, 'base_url', 'n/a')}): {e}"
+            ) from e
+        finally:
+            if self.timings:
+                dt = time.time() - t0
+                rf = f" response_format={response_format}" if response_format else ""
+                print(f"[llm] model={model} temp={temperature}{rf} took={dt:.2f}s")
 
-        if self.timings:
-            print(f"[llm] model={model} temp={temperature} took={dt:.2f}s")
-
-        return (resp.choices[0].message.content or "").strip()
+        content = resp.choices[0].message.content
+        return (content or "").strip()

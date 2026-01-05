@@ -10,11 +10,14 @@ from .runner import run_duel
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(prog="thesis-check", description="Local Pro/Contra debate + judge (LM Studio).")
-    p.add_argument("thesis", nargs="*", help="These als Text")
+    p = argparse.ArgumentParser(
+        prog="thesis-check",
+        description="Local Pro/Contra debate runner + judge (LM Studio / OpenAI-compatible endpoint).",
+    )
+    p.add_argument("thesis", nargs="*", help="Thesis text")
     args = p.parse_args()
 
-    thesis = "Bis 2030 fährt Anton seinen Audi A4 weiter."
+    thesis = "Germany will reach net greenhouse-gas neutrality by 2045."
     if args.thesis:
         thesis = " ".join(args.thesis).strip()
 
@@ -25,17 +28,17 @@ def main() -> int:
 
     print("\n=== PRO ===")
     for i, t in enumerate(A, 1):
-        print(f"\n[Runde {i}]\n{t}")
+        print(f"\n[Round {i}]\n{t}")
 
     print("\n=== CONTRA ===")
     for i, t in enumerate(B, 1):
-        print(f"\n[Runde {i}]\n{t}")
+        print(f"\n[Round {i}]\n{t}")
 
     print("\n=== JUDGE (Final) ===")
     print(json.dumps(asdict(J), indent=2, ensure_ascii=False))
 
     print(
-        f"\nDauer: {time.time() - t0:.1f}s | Modelle: A={settings.model_creative}, "
+        f"\nDuration: {time.time() - t0:.1f}s | Models: A={settings.model_creative}, "
         f"B={settings.model_critical}, Judge={settings.model_judge} | Log: {log_path}"
     )
     return 0

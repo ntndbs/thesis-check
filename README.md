@@ -79,7 +79,7 @@ TEMP_J=0.1
 
 MAX_ROUNDS=3
 CONVERGENCE_DELTA=0.05
-STOP_PHRASES=Einigung erreicht;Keine neuen Punkte
+STOP_PHRASES=STOP_PHRASES=agreement reached;no new points
 
 LOG_DIR=runs
 MAX_CHARS_AGENT=700
