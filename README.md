@@ -105,7 +105,7 @@ curl http://127.0.0.1:1234/v1/models
 ```
 ## Run
 ```powershell
-python -m thesis_check "I will keep driving my Audi A4 Quattro (2018) until 2030."
+python -m thesis_check "Switching to a heat pump will reduce household emissions over 10 years."
 ```
 Output includes:
 - PRO rounds
