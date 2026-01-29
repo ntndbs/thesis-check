@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Thin wrapper around an OpenAI-compatible chat completions endpoint (e.g., LM Studio)."""
+
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -16,19 +18,21 @@ class LLM:
         timeout: Optional[float] = None,
     ):
         """
-        base_url: OpenAI-compatible endpoint (e.g., LM Studio local server)
-        api_key:  arbitrary token for local servers
-        seed:     optional, only used if backend supports it
-        timeout:  optional request timeout in seconds (OpenAI SDK uses httpx under the hood)
+        Args:
+            base_url: OpenAI-compatible endpoint (e.g., LM Studio local server).
+            api_key: Arbitrary token for local servers.
+            seed: Optional; only used if backend supports it.
+            timeout: Optional request timeout in seconds (OpenAI SDK uses httpx under the hood).
         """
-        # NOTE: OpenAI python SDK accepts 'timeout' in constructor for httpx client timeouts
+        self.base_url = base_url
+        self.seed = seed
+
+        # NOTE: OpenAI python SDK accepts `timeout` for httpx client timeouts.
         # Some backends ignore it, but it's safe to pass.
         if timeout is not None:
             self.client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
         else:
             self.client = OpenAI(base_url=base_url, api_key=api_key)
-
-        self.seed = seed
 
         # Optional: enable timings via env var LLM_TIMINGS=1
         self.timings = os.getenv("LLM_TIMINGS", "0").strip() == "1"
@@ -41,15 +45,12 @@ class LLM:
         response_format: Optional[Dict[str, Any]] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """
-        Make a chat completion request.
+        """Send a chat completion request and return the assistant text content.
 
-        response_format:
-            Optional. If supported by backend, can enforce JSON output:
-            {"type": "json_object"}
-
-        extra:
-            Optional dict merged into request kwargs (advanced usage).
+        Args:
+            response_format: Optional; if supported by backend, can enforce JSON output, e.g.
+                {"type": "json_object"}
+            extra: Optional dict merged into request kwargs (advanced usage: max_tokens, top_p, etc.).
         """
         kwargs: Dict[str, Any] = {
             "model": model,
@@ -73,9 +74,8 @@ class LLM:
         try:
             resp = self.client.chat.completions.create(**kwargs)
         except Exception as e:
-            # Make debugging local endpoints easier
             raise RuntimeError(
-                f"LLM request failed (model={model}, base_url={getattr(self.client, 'base_url', 'n/a')}): {e}"
+                f"LLM request failed (model={model}, base_url={self.base_url}): {e}"
             ) from e
         finally:
             if self.timings:

@@ -1,3 +1,5 @@
+"""Module entrypoint for `python -m thesis_check`."""
+
 from .cli import main
 
 if __name__ == "__main__":

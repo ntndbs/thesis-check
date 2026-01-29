@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+"""Configuration via environment variables.
+
+Settings are loaded from `.env` (local) and the process environment (CI/production).
+This keeps code provider-agnostic: you can swap models, temperatures, stop criteria,
+and logging paths without touching Python code.
+"""
+
 import os
 from dataclasses import dataclass
 from typing import List, Optional
+
 from dotenv import load_dotenv
 
 
@@ -23,6 +31,16 @@ def _env_int(name: str, default: str) -> int:
         return int(_env(name, default))
     except ValueError:
         return int(default)
+
+
+def _env_int_optional(name: str) -> Optional[int]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -48,17 +66,11 @@ class Settings:
     seed: Optional[int]
     log_dir: str
 
-    @staticmethod
-    def from_env() -> "Settings":
-        load_dotenv()
-
-        seed_raw = os.getenv("SEED", "").strip()
-        seed: Optional[int] = None
-        if seed_raw:
-            try:
-                seed = int(seed_raw)
-            except ValueError:
-                seed = None
+    @classmethod
+    def from_env(cls) -> "Settings":
+        """Load settings from environment variables (with sane defaults)."""
+        # Do not override already-set environment variables.
+        load_dotenv(override=False)
 
         stop_phrases = [
             s.strip()
@@ -66,7 +78,7 @@ class Settings:
             if s.strip()
         ]
 
-        return Settings(
+        return cls(
             base_url=_env("LOCAL_BASE_URL", "http://127.0.0.1:1234/v1"),
             api_key=_env("LOCAL_API_KEY", "lm-studio"),
             model_creative=_env("MODEL_CREATIVE", "qwen2.5-7b-instruct"),
@@ -80,6 +92,6 @@ class Settings:
             stop_phrases=stop_phrases,
             max_chars_agent=_env_int("MAX_CHARS_AGENT", "700"),
             max_chars_judge=_env_int("MAX_CHARS_JUDGE", "900"),
-            seed=seed,
+            seed=_env_int_optional("SEED"),
             log_dir=_env("LOG_DIR", "runs"),
         )

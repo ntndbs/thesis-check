@@ -1,5 +1,10 @@
 from __future__ import annotations
+"""
+CLI entrypoint.
 
+Takes a thesis from the command line, runs the debate pipeline, prints the
+round outputs and the final judge JSON, and shows timing/model info.
+"""
 import argparse
 import json
 import time
@@ -10,6 +15,7 @@ from .runner import run_duel
 
 
 def main() -> int:
+    """Parse CLI args, load settings from env, run the debate, and print results."""
     p = argparse.ArgumentParser(
         prog="thesis-check",
         description="Local Pro/Contra debate runner + judge (LM Studio / OpenAI-compatible endpoint).",
@@ -17,7 +23,7 @@ def main() -> int:
     p.add_argument("thesis", nargs="*", help="Thesis text")
     args = p.parse_args()
 
-    thesis = "Germany will reach net greenhouse-gas neutrality by 2045."
+    thesis = "Switching to a heat pump will reduce household emissions over 10 years."
     if args.thesis:
         thesis = " ".join(args.thesis).strip()
 
