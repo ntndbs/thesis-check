@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+"""
+Debate orchestration.
+
+Design:
+- Two agents (PRO/CONTRA) produce strict 4-line templates (easy to validate + compare).
+- A judge summarizes ONLY the last round and outputs strict JSON with a conservative probability.
+- Robustness: retries for template drift/mirroring; JSON repair for occasional malformed judge output.
+- Efficiency: compact history (last round) to keep local inference fast and stable.
+- Auditability: JSONL logs per run for reproducibility and screenshots.
+"""
+
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -21,7 +32,8 @@ class JudgeOut:
     probability: float
 
 
-def _judge_from_obj(obj: dict, raw: str) -> JudgeOut:
+def _judge_from_obj(obj: dict) -> JudgeOut:
+    """Normalize judge JSON into a typed object and clamp probability to [0, 1]."""
     p = float(obj.get("probability", 0.5))
     p = max(0.0, min(1.0, p))
     return JudgeOut(
@@ -37,12 +49,13 @@ def parse_judge(raw: str) -> JudgeOut:
     """Parse the first valid JSON object found in the judge output."""
     raw = (raw or "").strip()
 
+    # Fast path: the model returned pure JSON
     try:
-        obj = json.loads(raw)
-        return _judge_from_obj(obj, raw)
+        return _judge_from_obj(json.loads(raw))
     except Exception:
         pass
 
+    # Fallback: find the first valid {...} block (models sometimes add extra tokens)
     for i, ch in enumerate(raw):
         if ch != "{":
             continue
@@ -51,8 +64,7 @@ def parse_judge(raw: str) -> JudgeOut:
                 continue
             snippet = raw[i:j]
             try:
-                obj = json.loads(snippet)
-                return _judge_from_obj(obj, raw)
+                return _judge_from_obj(json.loads(snippet))
             except Exception:
                 continue
 
@@ -66,6 +78,8 @@ def parse_judge(raw: str) -> JudgeOut:
 
 
 class JsonlLogger:
+    """Append-only JSONL log for auditability and easy screenshotting."""
+
     def __init__(self, log_dir: str):
         Path(log_dir).mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d-%H%M%S")
@@ -94,6 +108,7 @@ def _first_4_lines(text: str) -> str:
 
 
 def _compact_history(last_pro: str, last_con: str) -> str:
+    """Keep context small: last round only (token budget + stability)."""
     if not last_pro and not last_con:
         return ""
     return f"Last PRO:\n{_first_4_lines(last_pro)}\n\nLast CONTRA:\n{_first_4_lines(last_con)}"
@@ -111,12 +126,18 @@ def agent_call_validated(
     max_chars: int,
     which: str,
 ) -> str:
+    """Call an agent with strict template enforcement and anti-repetition.
+
+    We retry a few times because local models occasionally drift from strict formats.
+    On retry, we add a stronger instruction to force novelty and reduce mirroring.
+    """
     last_valid: str = ""
 
     for attempt in range(3):
         msgs = _agent_messages(role_prompt, thesis, history_compact)
 
         if attempt > 0:
+            # Retry only: force novelty + strict compliance (prevents repetition/mirroring).
             msgs.append(
                 {
                     "role": "system",
@@ -142,6 +163,7 @@ def agent_call_validated(
         last_valid = out
         return out
 
+    # If everything failed, return the last valid output if any, otherwise a safe placeholder.
     if last_valid:
         return last_valid
 
@@ -162,6 +184,10 @@ def agent_call_validated(
 
 
 def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_last: str) -> JudgeOut:
+    """Ask the judge for strict JSON on the last round only.
+
+    If JSON parsing fails, we run a repair prompt (temp=0) to convert the output into valid JSON.
+    """
     base_msgs = [
         {"role": "system", "content": SYSTEM_SAFETY},
         {"role": "system", "content": ROLE_JUDGE},
@@ -192,6 +218,7 @@ def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_l
     out = parsed if parsed else parse_judge(raw)
 
     if out.summary == "JSON-Fallback":
+        # Some local models emit extra tokens or malformed JSON; repair pass makes this robust.
         repair_msgs = [
             {"role": "system", "content": "Output ONLY valid JSON. No extra text."},
             {"role": "user", "content": f"Fix this to valid JSON only, preserving meaning:\n\n{raw}"},
@@ -199,6 +226,7 @@ def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_l
         raw2 = llm.chat(model=settings.model_judge, messages=repair_msgs, temperature=0.0)
         out = parse_judge(raw2)
 
+    # Post-limit (safe)
     out.summary = out.summary[:800]
     out.verdict = out.verdict[:800]
     out.key_evidence_for = [x[:200] for x in out.key_evidence_for][:10]
@@ -207,6 +235,14 @@ def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_l
 
 
 def run_duel(thesis: str, settings: Settings) -> Tuple[List[str], List[str], JudgeOut, str]:
+    """Run a structured PRO/CONTRA debate and return the final judge decision.
+
+    Early stop:
+    - stop phrases, or
+    - probability convergence (Δ below threshold).
+
+    Returns (pro_all, con_all, final_judge, log_path).
+    """
     llm = LLM(base_url=settings.base_url, api_key=settings.api_key, seed=settings.seed)
     logger = JsonlLogger(settings.log_dir)
 
@@ -260,7 +296,9 @@ def run_duel(thesis: str, settings: Settings) -> Tuple[List[str], List[str], Jud
         logger.write({"type": "judge_probe", "round": r, "judge": asdict(j_probe)})
 
         if last_prob is not None and abs(j_probe.probability - last_prob) < settings.convergence_delta:
-            logger.write({"type": "early_stop", "round": r, "reason": f"converged (Δ={abs(j_probe.probability - last_prob):.3f})"})
+            logger.write(
+                {"type": "early_stop", "round": r, "reason": f"converged (Δ={abs(j_probe.probability - last_prob):.3f})"}
+            )
             break
         last_prob = j_probe.probability
 
