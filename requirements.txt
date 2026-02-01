@@ -1,5 +1,7 @@
 openai>=1.0.0
 python-dotenv>=1.0.0
 tenacity>=8.0.0
-loguru>=0.7.0
 rich>=13.0.0
+
+# Dev dependencies
+pytest>=7.0.0

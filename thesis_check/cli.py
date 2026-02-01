@@ -1,17 +1,28 @@
 from __future__ import annotations
+
 """
 CLI entrypoint.
 
 Takes a thesis from the command line, runs the debate pipeline, prints the
 round outputs and the final judge JSON, and shows timing/model info.
 """
+
 import argparse
 import json
+import sys
 import time
 from dataclasses import asdict
 
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
 from .config import Settings
 from .runner import run_duel
+
+__all__ = ["main"]
+
+console = Console()
 
 
 def main() -> int:
@@ -29,22 +40,46 @@ def main() -> int:
 
     settings = Settings.from_env()
 
+    try:
+        settings.validate()
+    except ValueError as e:
+        console.print(f"[red]Configuration error:[/red] {e}")
+        return 1
+
+    console.print(Panel(thesis, title="Thesis", border_style="blue"))
+
     t0 = time.time()
-    A, B, J, log_path = run_duel(thesis, settings)
+    with console.status("[bold green]Running debate...", spinner="dots"):
+        pro_rounds, con_rounds, judge_result, log_path = run_duel(thesis, settings)
 
-    print("\n=== PRO ===")
-    for i, t in enumerate(A, 1):
-        print(f"\n[Round {i}]\n{t}")
+    console.print("\n[bold cyan]=== PRO ===[/bold cyan]")
+    for i, txt in enumerate(pro_rounds, 1):
+        console.print(f"\n[dim]Round {i}[/dim]")
+        console.print(txt)
 
-    print("\n=== CONTRA ===")
-    for i, t in enumerate(B, 1):
-        print(f"\n[Round {i}]\n{t}")
+    console.print("\n[bold magenta]=== CONTRA ===[/bold magenta]")
+    for i, txt in enumerate(con_rounds, 1):
+        console.print(f"\n[dim]Round {i}[/dim]")
+        console.print(txt)
 
-    print("\n=== JUDGE (Final) ===")
-    print(json.dumps(asdict(J), indent=2, ensure_ascii=False))
+    console.print("\n[bold yellow]=== JUDGE (Final) ===[/bold yellow]")
+    console.print_json(json.dumps(asdict(judge_result), ensure_ascii=False))
 
-    print(
-        f"\nDuration: {time.time() - t0:.1f}s | Models: A={settings.model_creative}, "
-        f"B={settings.model_critical}, Judge={settings.model_judge} | Log: {log_path}"
-    )
+    duration = time.time() - t0
+    info = Text()
+    info.append(f"Duration: {duration:.1f}s", style="green")
+    info.append(" | Models: ", style="dim")
+    info.append(f"A={settings.model_creative}", style="cyan")
+    info.append(", ", style="dim")
+    info.append(f"B={settings.model_critical}", style="magenta")
+    info.append(", ", style="dim")
+    info.append(f"Judge={settings.model_judge}", style="yellow")
+    info.append(" | Log: ", style="dim")
+    info.append(log_path, style="blue underline")
+    console.print(info)
+
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

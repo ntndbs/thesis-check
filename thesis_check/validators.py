@@ -8,7 +8,32 @@ machine-checkable, and stable for logging/screenshotting.
 
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from enum import Enum
 from typing import Dict, List, Optional, Tuple
+
+__all__ = [
+    "AgentRole",
+    "truncate",
+    "stop_phrase_hit",
+    "similarity",
+    "validate_agent_output",
+    "too_similar",
+    "parse_template",
+    "TemplateSpec",
+    "SPEC_A",
+    "SPEC_B",
+    "SIMILARITY_THRESHOLD",
+]
+
+# Anti-mirroring threshold: outputs above this similarity are rejected
+SIMILARITY_THRESHOLD = 0.92
+
+
+class AgentRole(Enum):
+    """Agent roles in the debate."""
+
+    PRO = "A"
+    CONTRA = "B"
 
 
 @dataclass(frozen=True)
@@ -64,13 +89,17 @@ def parse_template(text: str, spec: TemplateSpec) -> Optional[Dict[str, str]]:
     return out
 
 
-def validate_agent_output(text: str, which: str) -> bool:
+def validate_agent_output(text: str, which: AgentRole | str) -> bool:
     """Return True iff the agent output matches the strict template for A or B."""
-    spec = SPEC_A if which == "A" else SPEC_B
+    if isinstance(which, str):
+        which = AgentRole(which)
+    spec = SPEC_A if which == AgentRole.PRO else SPEC_B
     return parse_template(text, spec) is not None
 
 
-def too_similar(candidate: str, previous_other: str, threshold: float = 0.92) -> bool:
+def too_similar(
+    candidate: str, previous_other: str, threshold: float = SIMILARITY_THRESHOLD
+) -> bool:
     """Heuristic to detect mirroring/repetition between agents."""
     if not (previous_other or "").strip():
         return False

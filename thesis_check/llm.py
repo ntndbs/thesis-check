@@ -6,7 +6,9 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from openai import OpenAI
+from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+
+__all__ = ["LLM"]
 
 
 class LLM:
@@ -73,7 +75,7 @@ class LLM:
         t0 = time.time()
         try:
             resp = self.client.chat.completions.create(**kwargs)
-        except Exception as e:
+        except (APIStatusError, APIConnectionError, APITimeoutError) as e:
             raise RuntimeError(
                 f"LLM request failed (model={model}, base_url={self.base_url}): {e}"
             ) from e

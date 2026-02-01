@@ -12,15 +12,28 @@ Design:
 """
 
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import IO, Any, Dict, List, Optional, Tuple
 
-from .config import Settings
+from .config import (
+    AGENT_MAX_RETRIES,
+    EVIDENCE_ITEM_CHARS,
+    FIELD_TRUNCATE_CHARS,
+    JUDGE_MAX_RETRIES,
+    MAX_EVIDENCE_ITEMS,
+    Settings,
+)
 from .llm import LLM
 from .prompts import ROLE_A, ROLE_B, ROLE_JUDGE, SYSTEM_SAFETY
-from .validators import truncate, stop_phrase_hit, too_similar, validate_agent_output
+from .validators import AgentRole, stop_phrase_hit, too_similar, truncate, validate_agent_output
+
+__all__ = ["JudgeOut", "JsonlLogger", "run_duel", "parse_judge"]
+
+# Regex to find JSON object in text (handles nested braces)
+_JSON_OBJECT_RE = re.compile(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}")
 
 
 @dataclass
@@ -38,8 +51,8 @@ def _judge_from_obj(obj: dict) -> JudgeOut:
     p = max(0.0, min(1.0, p))
     return JudgeOut(
         summary=str(obj.get("summary", "")),
-        key_evidence_for=list(obj.get("key_evidence_for", []))[:10],
-        key_evidence_against=list(obj.get("key_evidence_against", []))[:10],
+        key_evidence_for=list(obj.get("key_evidence_for", []))[:MAX_EVIDENCE_ITEMS],
+        key_evidence_against=list(obj.get("key_evidence_against", []))[:MAX_EVIDENCE_ITEMS],
         verdict=str(obj.get("verdict", "")),
         probability=p,
     )
@@ -52,27 +65,21 @@ def parse_judge(raw: str) -> JudgeOut:
     # Fast path: the model returned pure JSON
     try:
         return _judge_from_obj(json.loads(raw))
-    except Exception:
+    except (json.JSONDecodeError, ValueError, TypeError):
         pass
 
-    # Fallback: find the first valid {...} block (models sometimes add extra tokens)
-    for i, ch in enumerate(raw):
-        if ch != "{":
+    # Fallback: find JSON objects using regex (more efficient than O(n²) scan)
+    for match in _JSON_OBJECT_RE.finditer(raw):
+        try:
+            return _judge_from_obj(json.loads(match.group()))
+        except (json.JSONDecodeError, ValueError, TypeError):
             continue
-        for j in range(len(raw), i, -1):
-            if raw[j - 1] != "}":
-                continue
-            snippet = raw[i:j]
-            try:
-                return _judge_from_obj(json.loads(snippet))
-            except Exception:
-                continue
 
     return JudgeOut(
         summary="JSON-Fallback",
         key_evidence_for=[],
         key_evidence_against=[],
-        verdict=raw[:240],
+        verdict=raw[:FIELD_TRUNCATE_CHARS],
         probability=0.5,
     )
 
@@ -84,11 +91,28 @@ class JsonlLogger:
         Path(log_dir).mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d-%H%M%S")
         self.path = Path(log_dir) / f"run-{ts}.jsonl"
+        self._file: Optional[IO[str]] = None
+
+    def _ensure_open(self) -> IO[str]:
+        if self._file is None or self._file.closed:
+            self._file = self.path.open("a", encoding="utf-8")
+        return self._file
 
     def write(self, event: Dict[str, Any]) -> None:
         event["ts"] = time.time()
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        f = self._ensure_open()
+        f.write(json.dumps(event, ensure_ascii=False) + "\n")
+        f.flush()
+
+    def close(self) -> None:
+        if self._file is not None and not self._file.closed:
+            self._file.close()
+
+    def __enter__(self) -> "JsonlLogger":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
 
 
 def _agent_messages(role_prompt: str, thesis: str, history_compact: str) -> List[Dict[str, str]]:
@@ -124,16 +148,17 @@ def agent_call_validated(
     history_compact: str,
     temperature: float,
     max_chars: int,
-    which: str,
+    which: AgentRole | str,
 ) -> str:
     """Call an agent with strict template enforcement and anti-repetition.
 
     We retry a few times because local models occasionally drift from strict formats.
     On retry, we add a stronger instruction to force novelty and reduce mirroring.
     """
-    last_valid: str = ""
+    if isinstance(which, str):
+        which = AgentRole(which)
 
-    for attempt in range(3):
+    for attempt in range(AGENT_MAX_RETRIES):
         msgs = _agent_messages(role_prompt, thesis, history_compact)
 
         if attempt > 0:
@@ -160,14 +185,10 @@ def agent_call_validated(
         if last_self and too_similar(out, last_self):
             continue
 
-        last_valid = out
         return out
 
-    # If everything failed, return the last valid output if any, otherwise a safe placeholder.
-    if last_valid:
-        return last_valid
-
-    if which == "A":
+    # All retries failed, return a safe placeholder
+    if which == AgentRole.PRO:
         return (
             "- PRO1: (Error) The model did not reliably follow the required template.\n"
             "- PRO2: Re-run or adjust the prompt/model settings.\n"
@@ -204,7 +225,7 @@ def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_l
     raw = ""
     parsed: Optional[JudgeOut] = None
 
-    for attempt in range(2):
+    for attempt in range(JUDGE_MAX_RETRIES):
         msgs = list(base_msgs)
         if attempt > 0:
             msgs.append({"role": "system", "content": "STRICT: Reply with valid JSON only. No extra text."})
@@ -227,10 +248,10 @@ def judge_call(llm: LLM, settings: Settings, thesis: str, pros_last: str, cons_l
         out = parse_judge(raw2)
 
     # Post-limit (safe)
-    out.summary = out.summary[:800]
-    out.verdict = out.verdict[:800]
-    out.key_evidence_for = [x[:200] for x in out.key_evidence_for][:10]
-    out.key_evidence_against = [x[:200] for x in out.key_evidence_against][:10]
+    out.summary = out.summary[:FIELD_TRUNCATE_CHARS]
+    out.verdict = out.verdict[:FIELD_TRUNCATE_CHARS]
+    out.key_evidence_for = [x[:EVIDENCE_ITEM_CHARS] for x in out.key_evidence_for][:MAX_EVIDENCE_ITEMS]
+    out.key_evidence_against = [x[:EVIDENCE_ITEM_CHARS] for x in out.key_evidence_against][:MAX_EVIDENCE_ITEMS]
     return out
 
 
@@ -244,7 +265,6 @@ def run_duel(thesis: str, settings: Settings) -> Tuple[List[str], List[str], Jud
     Returns (pro_all, con_all, final_judge, log_path).
     """
     llm = LLM(base_url=settings.base_url, api_key=settings.api_key, seed=settings.seed)
-    logger = JsonlLogger(settings.log_dir)
 
     pro_all: List[str] = []
     con_all: List[str] = []
@@ -253,56 +273,57 @@ def run_duel(thesis: str, settings: Settings) -> Tuple[List[str], List[str], Jud
     last_pro = ""
     last_con = ""
 
-    for r in range(1, settings.max_rounds + 1):
-        history_compact = _compact_history(last_pro, last_con)
+    with JsonlLogger(settings.log_dir) as logger:
+        for r in range(1, settings.max_rounds + 1):
+            history_compact = _compact_history(last_pro, last_con)
 
-        pro = agent_call_validated(
-            llm=llm,
-            model=settings.model_creative,
-            role_prompt=ROLE_A,
-            thesis=thesis,
-            last_other=last_con,
-            last_self=last_pro,
-            history_compact=history_compact,
-            temperature=settings.temp_a,
-            max_chars=settings.max_chars_agent,
-            which="A",
-        )
-        logger.write({"type": "agentA", "round": r, "text": pro})
-
-        con = agent_call_validated(
-            llm=llm,
-            model=settings.model_critical,
-            role_prompt=ROLE_B,
-            thesis=thesis,
-            last_other=pro,
-            last_self=last_con,
-            history_compact=_compact_history(pro, last_con),
-            temperature=settings.temp_b,
-            max_chars=settings.max_chars_agent,
-            which="B",
-        )
-        logger.write({"type": "agentB", "round": r, "text": con})
-
-        pro_all.append(pro)
-        con_all.append(con)
-        last_pro, last_con = pro, con
-
-        if stop_phrase_hit(pro, settings.stop_phrases) or stop_phrase_hit(con, settings.stop_phrases):
-            logger.write({"type": "early_stop", "round": r, "reason": "stop_phrase"})
-            break
-
-        j_probe = judge_call(llm, settings, thesis, pro, con)
-        logger.write({"type": "judge_probe", "round": r, "judge": asdict(j_probe)})
-
-        if last_prob is not None and abs(j_probe.probability - last_prob) < settings.convergence_delta:
-            logger.write(
-                {"type": "early_stop", "round": r, "reason": f"converged (Δ={abs(j_probe.probability - last_prob):.3f})"}
+            pro = agent_call_validated(
+                llm=llm,
+                model=settings.model_creative,
+                role_prompt=ROLE_A,
+                thesis=thesis,
+                last_other=last_con,
+                last_self=last_pro,
+                history_compact=history_compact,
+                temperature=settings.temp_a,
+                max_chars=settings.max_chars_agent,
+                which=AgentRole.PRO,
             )
-            break
-        last_prob = j_probe.probability
+            logger.write({"type": "agentA", "round": r, "text": pro})
 
-    final_j = judge_call(llm, settings, thesis, last_pro, last_con)
-    logger.write({"type": "judge_final", "round": len(pro_all), "judge": asdict(final_j), "thesis": thesis})
+            con = agent_call_validated(
+                llm=llm,
+                model=settings.model_critical,
+                role_prompt=ROLE_B,
+                thesis=thesis,
+                last_other=pro,
+                last_self=last_con,
+                history_compact=_compact_history(pro, last_con),
+                temperature=settings.temp_b,
+                max_chars=settings.max_chars_agent,
+                which=AgentRole.CONTRA,
+            )
+            logger.write({"type": "agentB", "round": r, "text": con})
 
-    return pro_all, con_all, final_j, str(logger.path)
+            pro_all.append(pro)
+            con_all.append(con)
+            last_pro, last_con = pro, con
+
+            if stop_phrase_hit(pro, settings.stop_phrases) or stop_phrase_hit(con, settings.stop_phrases):
+                logger.write({"type": "early_stop", "round": r, "reason": "stop_phrase"})
+                break
+
+            j_probe = judge_call(llm, settings, thesis, pro, con)
+            logger.write({"type": "judge_probe", "round": r, "judge": asdict(j_probe)})
+
+            if last_prob is not None and abs(j_probe.probability - last_prob) < settings.convergence_delta:
+                logger.write(
+                    {"type": "early_stop", "round": r, "reason": f"converged (Δ={abs(j_probe.probability - last_prob):.3f})"}
+                )
+                break
+            last_prob = j_probe.probability
+
+        final_j = judge_call(llm, settings, thesis, last_pro, last_con)
+        logger.write({"type": "judge_final", "round": len(pro_all), "judge": asdict(final_j), "thesis": thesis})
+
+        return pro_all, con_all, final_j, str(logger.path)

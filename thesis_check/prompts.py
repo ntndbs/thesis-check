@@ -1,3 +1,5 @@
+__all__ = ["SYSTEM_SAFETY", "ROLE_A", "ROLE_B", "ROLE_JUDGE"]
+
 SYSTEM_SAFETY = (
     "Be precise and technically correct. Follow safety and legal standards. "
     "No dangerous instructions. No fabricated sources or statistics. "

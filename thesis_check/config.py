@@ -13,6 +13,24 @@ from typing import List, Optional
 
 from dotenv import load_dotenv
 
+__all__ = [
+    "Settings",
+    "AGENT_MAX_RETRIES",
+    "JUDGE_MAX_RETRIES",
+    "FIELD_TRUNCATE_CHARS",
+    "EVIDENCE_ITEM_CHARS",
+    "MAX_EVIDENCE_ITEMS",
+]
+
+# Retry counts for template compliance
+AGENT_MAX_RETRIES = 3
+JUDGE_MAX_RETRIES = 2
+
+# Truncation limits for judge output fields
+FIELD_TRUNCATE_CHARS = 800
+EVIDENCE_ITEM_CHARS = 200
+MAX_EVIDENCE_ITEMS = 10
+
 
 def _env(name: str, default: str) -> str:
     v = os.getenv(name)
@@ -91,7 +109,31 @@ class Settings:
             convergence_delta=_env_float("CONVERGENCE_DELTA", "0.02"),
             stop_phrases=stop_phrases,
             max_chars_agent=_env_int("MAX_CHARS_AGENT", "700"),
-            max_chars_judge=_env_int("MAX_CHARS_JUDGE", "900"),
+            max_chars_judge=_env_int("MAX_CHARS_JUDGE", "2500"),
             seed=_env_int_optional("SEED"),
             log_dir=_env("LOG_DIR", "runs"),
         )
+
+    def validate(self) -> None:
+        """Validate settings constraints. Raises ValueError if invalid."""
+        errors: List[str] = []
+
+        if self.max_rounds < 1:
+            errors.append("max_rounds must be >= 1")
+        if self.convergence_delta <= 0:
+            errors.append("convergence_delta must be > 0")
+        if not (0 <= self.temp_a <= 2):
+            errors.append("temp_a must be in [0, 2]")
+        if not (0 <= self.temp_b <= 2):
+            errors.append("temp_b must be in [0, 2]")
+        if not (0 <= self.temp_j <= 2):
+            errors.append("temp_j must be in [0, 2]")
+        if self.max_chars_agent < 100:
+            errors.append("max_chars_agent must be >= 100")
+        if self.max_chars_judge < 100:
+            errors.append("max_chars_judge must be >= 100")
+        if not self.base_url:
+            errors.append("base_url cannot be empty")
+
+        if errors:
+            raise ValueError(f"Invalid settings: {'; '.join(errors)}")
